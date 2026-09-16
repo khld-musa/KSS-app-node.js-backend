@@ -1,29 +1,26 @@
-const express = require('express')
+const express = require('express');
 const router = express.Router();
 
+const ctrl = require('../controllers/productController');
+const s = require('../validation/catalog');
+const engagement = require('../validation/engagement');
+const validate = require('../middlewares/validate');
+const { requireAuth, optionalAuth, requireRole } = require('../middlewares/auth');
+const { imageArray } = require('../middlewares/upload');
 
-const {
-    getProducts,
-    getAdminProducts,
-    newProduct,
-    getSingleProduct,
-    updateProduct,
-    deleteProduct,
+const manager = [requireAuth, requireRole('vendor', 'admin')];
+const id = validate({ params: s.idParam });
 
-} = require('../controllers/productController')
+// Public
+router.get('/products', validate({ query: s.listProducts }), ctrl.listProducts);
+// Logged-in views are recorded for "Previously browsed products"
+router.get('/products/:id', optionalAuth, id, ctrl.getProduct);
+router.get('/products/:id/more-from-store', validate({ params: s.idParam, query: engagement.moreFromStore }), ctrl.getMoreFromStore);
 
-const { isAuthenticatedUser, authorizeRoles } = require('../middlewares/auth');
-
-
-router.route('/products').get(isAuthenticatedUser, getProducts);
-router.route('/admin/products').get(isAuthenticatedUser, getAdminProducts);
-router.route('/product/:id').get(isAuthenticatedUser, getSingleProduct);
-
-router.route('/admin/product/new').post(isAuthenticatedUser, authorizeRoles('admin'), newProduct);
-
-router.route('/admin/product/:id')
-    .put(isAuthenticatedUser, authorizeRoles('admin'), updateProduct)
-    .delete(isAuthenticatedUser, authorizeRoles('admin'), deleteProduct);
-
+// Store owner or admin (products are created under /stores/:id/products)
+router.patch('/products/:id', manager, validate({ params: s.idParam, body: s.updateProduct }), ctrl.updateProduct);
+router.delete('/products/:id', manager, id, ctrl.deleteProduct);
+router.post('/products/:id/images', manager, id, imageArray('images', 10), ctrl.uploadProductImages);
+router.delete('/products/:id/images/:imageId', manager, validate({ params: s.imageParams }), ctrl.deleteProductImage);
 
 module.exports = router;

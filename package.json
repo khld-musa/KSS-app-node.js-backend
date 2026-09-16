@@ -1,34 +1,41 @@
 {
-  "name": "KSS",
+  "name": "SudaMarket",
   "version": "1.0.0",
   "description": "",
-  "main": "server.js",
+  "main": "backend/server.js",
   "scripts": {
-    "start": "SET node backend/server.js",
-    "dev": "SET NODE_ENV=DEVELOPMENT& nodemon backend/server",
-    "prod": "SET NODE_ENV=PRODUCTION& nodemon backend/server"
+    "start": "cross-env NODE_ENV=PRODUCTION node backend/server.js",
+    "dev": "cross-env NODE_ENV=DEVELOPMENT nodemon backend/server.js",
+    "prod": "cross-env NODE_ENV=PRODUCTION nodemon backend/server.js",
+    "create-admin": "node backend/scripts/createAdmin.js",
+    "test":"cross-env NODE_ENV=test node --test --test-concurrency=1 'backend/tests/**/*.test.js'"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "body-parser": "^1.20.0",
-    "cloudinary": "^1.29.1",
-    "cookie-parser": "^1.4.5",
-    "crypto": "^1.0.1",
-    "dotenv": "^16.0.1",
-    "express": "^4.18.1",
-    "express-fileupload": "^1.2.0",
-    "https": "^1.0.0",
-    "jsonwebtoken": "^8.5.1",
-    "mongoose": "^6.3.3",
-    "multer": "^1.4.4",
-    "nodemailer": "^6.7.5",
-    "nodemon": "^2.0.16",
-    "otp-generator": "^1.1.0",
-    "validator": "^13.1.17"
+    "bcryptjs": "^3.0.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "cross-env": "^10.1.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "libphonenumber-js": "^1.13.13",
+    "mongoose": "^9.10.1",
+    "multer": "^2.4.0",
+    "nodemailer": "^10.0.10",
+    "otp-generator": "^4.0.1",
+    "validator": "^13.15.35",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14",
+    "supertest": "^7.2.2"
   }
 }
-
- 

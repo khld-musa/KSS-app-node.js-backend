@@ -1,133 +1,77 @@
-const mongoose = require("mongoose");
-const validator = require("validator");
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
-const crypto = require("crypto");
+const bcrypt = require('bcryptjs');
+const validator = require('validator');
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-const userSchema = new mongoose.Schema({
-  name: {
-    type: String,
-    required: [false, "Please enter your name"],
-    maxLength: [30, "Your name cannot exceed 30 characters"],
-  },
-  email: {
-    type: String,
-    required: [false, "Please enter your email"],
-    validate: [validator.isEmail, "Please enter valid email address"],
-  },
-  phone: {
-    type: String,
-    required: [true, "Please enter your phone number"],
-    unique: true,
-    // validate: [validator.isEmail, "Please enter valid email address"],
-  },
-  phone2: {
-    type: String,
-    required: [false, "Please enter your phone number"],
-    unique: false,
-    // validate: [validator.isEmail, "Please enter valid email address"],
-  },
-  password: {
-    type: String,
-    required: [true, "Please enter your password"],
-    minlength: [6, "Your password must be longer than 6 characters"],
-    select: false,
-    match: [
-      /^(?=.*\d)(?=.*[@#\-_$%^&+=§!\?])(?=.*[a-z])(?=.*[A-Z])[0-9A-Za-z@#\-_$%^&+=§!\?]+$/,
-      "Password must contain at leat 1 uppercase letter, 1 lowercase letter, 1 digit and a special character",
-    ],
-  },
-  confPassword: {
-    type: String,
-    required: [true, "Please enter your password"],
-    minlength: [6, "Your password must be longer than 6 characters"],
-    select: false,
-    match: [
-      /^(?=.*\d)(?=.*[@#\-_$%^&+=§!\?])(?=.*[a-z])(?=.*[A-Z])[0-9A-Za-z@#\-_$%^&+=§!\?]+$/,
-      "Password must contain at leat 1 uppercase letter, 1 lowercase letter, 1 digit and a special character",
-    ],
-  },
-  phoneOtp: {
-    type: String,
-  },
+const ROLES = ['user', 'vendor', 'driver', 'admin'];
 
-  role: {
-    type: String,
-    default: "user",
+const addressSchema = new Schema(
+  {
+    label: { type: String, trim: true, maxlength: 50 },
+    // Who receives the delivery (may differ from the account holder)
+    fullName: { type: String, required: true, trim: true, maxlength: 80 },
+    phone: { type: String, required: true },
+    line1: { type: String, required: true, trim: true, maxlength: 200 },
+    city: { type: String, required: true, trim: true, maxlength: 100 },
+    notes: { type: String, trim: true, maxlength: 300 },
+    location: {
+      lat: { type: Number, min: -90, max: 90 },
+      lng: { type: Number, min: -180, max: 180 },
+    },
+    isDefault: { type: Boolean, default: false },
   },
-  createdAt: {
-    type: Date,
-    default: Date.now,
+  { _id: true }
+);
+
+const userSchema = new Schema(
+  {
+    firstName: { type: String, required: true, trim: true, maxlength: 50 },
+    lastName: { type: String, required: true, trim: true, maxlength: 50 },
+    email: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      validate: [validator.isEmail, 'Please enter a valid email address'],
+    },
+    // E.164, e.g. +201234567890
+    phone: { type: String, required: true, unique: true },
+    phoneVerified: { type: Boolean, default: false },
+    passwordHash: { type: String, required: true, select: false },
+    passwordChangedAt: { type: Date },
+    // Bumped on password change / forced logout; access tokens carry it and must match
+    tokenVersion: { type: Number, default: 0 },
+    passwordResetTokenHash: { type: String, select: false },
+    passwordResetExpiresAt: { type: Date, select: false },
+    termsAcceptedAt: { type: Date },
+    role: { type: String, enum: ROLES, default: 'user' },
+    addresses: [addressSchema],
   },
-  resetPasswordToken: String,
-  resetPasswordExpire: Date,
-
-  registerUserToken: String,
-  registerUserExpire: Date,
-
-});
-
-// Encrypting password before saving user
-userSchema.pre("save", async function (next) {
-  if (!this.isModified("password")) {
-    next();
+  {
+    timestamps: true,
+    toJSON: {
+      versionKey: false,
+      transform(doc, ret) {
+        delete ret.passwordHash;
+        delete ret.passwordResetTokenHash;
+        delete ret.passwordResetExpiresAt;
+        return ret;
+      },
+    },
   }
+);
 
-  this.password = await bcrypt.hash(this.password, 10);
-});
+userSchema.index({ email: 1 }, { unique: true, sparse: true });
 
-userSchema.pre("save", async function (next) {
-  if (!this.isModified("confPassword")) {
-    next();
-  }
-
-  this.confPassword = await bcrypt.hash(this.confPassword, 10);
-});
-
-// Compare user password
-userSchema.methods.comparePassword = async function (enteredPassword) {
-  return await bcrypt.compare(enteredPassword, this.password);
+userSchema.methods.setPassword = async function (plain) {
+  this.passwordHash = await bcrypt.hash(plain, 10);
 };
 
-// Return JWT token
-userSchema.methods.getJwtToken = function () {
-  return jwt.sign({ id: this._id }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_TIME,
-  });
-};
-otpGen = function(){
-  const otp = Math.floor(Math.random() * 10000) + '';
-  if(otp.length == 4){
-    return otp;
-  }else{
-    return otpGen();
-  }
-}
-// Generate password reset token
-userSchema.methods.getResetPasswordToken = function () {
-  // Generate token
-  const resetToken = otpGen();
-
-  this.resetPasswordToken = resetToken;
-
-  // Set token expire time
-  this.regiserUserExpire = Date.now() + 30 * 60 * 1000;
-
-  return resetToken;
+userSchema.methods.comparePassword = function (plain) {
+  if (!this.passwordHash) return Promise.resolve(false);
+  return bcrypt.compare(plain, this.passwordHash);
 };
 
+const User = mongoose.model('User', userSchema);
+User.ROLES = ROLES;
 
-// Generate password reset token
-userSchema.methods.getRegisterToken = function () {
-  // Generate token
-  const registerToken = otpGen();
-
-  this.registerUserToken = registerToken;
-
-  // Set token expire time
-  this.resetUserExpire = Date.now() + 30 * 60 * 1000;
-
-  return registerToken;
-};
-
-module.exports = mongoose.model("User", userSchema);
+module.exports = User;

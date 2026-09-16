@@ -1,122 +1,96 @@
-const mongoose = require("mongoose");
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-const orderSchema = mongoose.Schema({
-  shippingInfo: [
-    {
-      userName: {
-        type: String,
-        required: true,
-      },
-      address: {
-        type: String,
-        required: true,
-      },
+const SHIPMENT_STATUSES = ['pending', 'confirmed', 'preparing', 'out_for_delivery', 'delivered', 'cancelled'];
 
-      phoneNo1: {
-        type: String,
-        required: true,
-      },
-      phoneNo2: {
-        type: String,
-        required: true,
-      },
+// Snapshot of what was bought, so later product edits never change past orders
+const orderItemSchema = new Schema(
+  {
+    product: { type: Schema.Types.ObjectId, ref: 'Product', required: true },
+    variant: { type: Schema.Types.ObjectId, required: true },
+    name: { type: String, required: true },
+    variantLabel: { type: String, required: true },
+    image: { type: String, default: null },
+    price: { type: Number, required: true },
+    compareAtPrice: { type: Number, default: null },
+    qty: { type: Number, required: true, min: 1 },
+    lineTotal: { type: Number, required: true },
+  },
+  { _id: false }
+);
 
-      location: {
-        latitude: {
-          type: Number,
-          required: true,
-        },
-        longitude: {
-          type: Number,
-          required: true,
-        },
-      },
-    },
-  ],
+const statusEventSchema = new Schema(
+  {
+    status: { type: String, enum: SHIPMENT_STATUSES, required: true },
+    at: { type: Date, required: true },
+    by: { type: Schema.Types.ObjectId, ref: 'User' },
+    note: { type: String },
+  },
+  { _id: false }
+);
 
-  bokImage: {
-    data: String,
-  },
-  user: {
-    type: mongoose.Schema.Types.ObjectId,
-    required: true,
-    ref: "User",
-  },
-  orderItems: [
-    {
-      name: {
-        type: String,
-        required: true,
-      },
-      head: {
-        type: String,
-        required: [true, "Please select category for this product"],
-        // enum: {
-        //   values: ["with head", "without head"],
-        //   message: "Please select correct category for product",
-        // },
-      },
-      bowels: {
-        type: String,
-        required: [true, "Please select category for this product"],
-        // enum: {
-        //   values: ["with bowels", "without bowels"],
-        //   message: "Please select correct category for product",
-        // },
-      },
-      weight: {
-        type: String,
-        required: [true, "Please select category for this product"],
-        // enum: {
-        //   values: ["small", "medium", "larg"],
-        //   message: "Please select correct weight for product",
-        // },
-      },
-      headPrice: {
-        type: Number,
-        required: true,
-      },
-      weightPrice: {
-        type: Number,
-        required: true,
-      },
-      bowelsPrice: {
-        type: Number,
-        required: true,
-      },
-      quantity: {
-        type: Number,
-        required: true,
-      },
-      totalPrice: {
-        type: Number,
-        required: true,
-        default: 0.0,
-      },
-
-      // product: {
-      //   type: mongoose.Schema.Types.ObjectId,
-      //   required: true,
-      //   ref: "Product",
-      // },
-    },
-  ],
-  num: {
-    type: Number,
-    
-  },
-  orderStatus: {
-    type: String,
-    required: true,
-    default: "Processing",
-  },
-  deliveredAt: {
-    type: Date,
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now,
-  },
+// Each store prepares and delivers its part of the order separately
+const shipmentSchema = new Schema({
+  store: { type: Schema.Types.ObjectId, ref: 'Store', required: true },
+  storeName: { type: String, required: true },
+  items: [orderItemSchema],
+  itemsTotal: { type: Number, required: true },
+  deliveryFee: { type: Number, required: true },
+  couponDiscount: { type: Number, default: 0 },
+  total: { type: Number, required: true },
+  status: { type: String, enum: SHIPMENT_STATUSES, default: 'pending' },
+  statusHistory: [statusEventSchema],
+  driver: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+  deliveredAt: { type: Date },
 });
 
-module.exports = mongoose.model("Order", orderSchema);
+const orderSchema = new Schema(
+  {
+    // Human-friendly reference shown to customers, e.g. SM-7K3QX9PA
+    number: { type: String, required: true, unique: true },
+    user: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    address: {
+      label: String,
+      fullName: String,
+      phone: String,
+      line1: String,
+      city: String,
+      notes: String,
+      location: { lat: Number, lng: Number },
+    },
+    shipments: [shipmentSchema],
+    pricing: {
+      itemCount: Number,
+      subtotal: Number,
+      itemSavings: Number,
+      couponDiscount: Number,
+      savings: Number,
+      delivery: Number,
+      total: Number,
+      currency: { type: String, default: 'EGP' },
+    },
+    coupon: {
+      type: new Schema({ code: String, type: { type: String }, value: Number }, { _id: false }),
+      default: null,
+    },
+    // Payment methods are not decided yet; orders are recorded as unpaid.
+    payment: {
+      method: { type: String, default: null },
+      status: { type: String, enum: ['unpaid', 'paid', 'refunded'], default: 'unpaid' },
+    },
+    // Overall status, derived from the shipments (see services/orders.js)
+    status: { type: String, enum: SHIPMENT_STATUSES, default: 'pending' },
+    notes: { type: String, default: '' },
+  },
+  { timestamps: true, optimisticConcurrency: true, toJSON: { versionKey: false } }
+);
+
+orderSchema.index({ user: 1, _id: -1 });
+orderSchema.index({ 'shipments.store': 1, _id: -1 });
+orderSchema.index({ 'shipments.driver': 1, _id: -1 });
+orderSchema.index({ status: 1, _id: -1 });
+
+const Order = mongoose.model('Order', orderSchema);
+Order.SHIPMENT_STATUSES = SHIPMENT_STATUSES;
+
+module.exports = Order;

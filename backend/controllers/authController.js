@@ -1,368 +1,210 @@
-const User = require("../models/user");
+const crypto = require('crypto');
+const User = require('../models/user');
+const ApiError = require('../utils/ApiError');
+const otpService = require('../services/otp');
+const tokens = require('../services/tokens');
 
-const ErrorHandler = require("../utils/errorHandler");
-const catchAsyncErrors = require("../middlewares/catchAsyncErrors");
-const sendToken = require("../utils/jwtToken");
-const sendEmail = require("../utils/sendMessage");
-const { compare } = require("bcryptjs");
+const RESET_TOKEN_TTL_MS = 15 * 60 * 1000;
 
-// const crypto = require("crypto");
-// const cloudinary = require("cloudinary");
+const clientMeta = (req) => ({ userAgent: req.headers['user-agent'], ip: req.ip });
 
-
-
-//registerOTP => /api/v1/register/otp
-
-exports.registerOtp = catchAsyncErrors(async (req, res, next) => {
-  // Get reset token
-  const user = await User.findOne({ phone: req.body.phone });
-
-  if (!user) {
-    return next(new ErrorHandler("User not found with this phone", 404));
-  }
-
-  const resetToken = user.getRegisterToken();
-
-  await user.save({ validateBeforeSave: false });
-
-  // const message = `Your password reset token is as follow:\n\n${resetToken}\n\nIf you have not requested this phone, then ignore it.`;
-  const message = `Your password reset token is as follow:\n ${resetToken}\n\nIf you have not requested this phone, then ignore it.`;
-
-  try {
-    await sendEmail({
-      phone: user.phone,
-      subject: "KSS Password Recovery",
-      message,
-    });
-
-    res.status(200).json({
-      success: true,
-      message: `Email sent to: ${user.phone}`,
-    });
-  } catch (error) {
-    user.registerToken = undefined;
-    user.registerExpire = undefined;
-
-    await user.save({ validateBeforeSave: false });
-
-    return next(new ErrorHandler(error.message, 500));
-  }
-})
-
-// Register a user   => /api/v1/register
-
-exports.registerUser = catchAsyncErrors(async (req, res, next) => {
-  var user = await User.findOne({ phone: req.body.phone });
-
-  const { name, email, phone, password, phone2, confPassword } = req.body;
-  if (req.body.password !== req.body.confPassword) {
-    return next(new ErrorHandler("Passwords not match", 401));
-  }
-  
-
-  if (user) {
-    return next(new ErrorHandler("User with this phone number already exist", 404));
-  }
-   try {
-    const user = await User.create({
-      name,
-      email,
-      phone,
-      phone2,
-      password,
-      confPassword,
-    });
-  
-
-  res.status(200).json({
-    success: true,
-    user,
+// Writes the access token to a cookie for web clients and returns both tokens in the body.
+function sendAuth(res, status, user, pair) {
+  res.cookie('token', pair.accessToken, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'PRODUCTION',
+    maxAge: 15 * 60 * 1000,
   });
-   } catch (err) {
-    next(err);
-   }
+  res.status(status).json({ success: true, user, ...pair });
+}
 
-});
-
-// validateOtp  => /api/v1/register/validation
-exports.validateUserSignUp = catchAsyncErrors(async (req, res, next) => {
-  const { registerUserToken } = req.body;
-
-  const user = await User.findOne({ phone: req.body.phone });
-
-  if (!user) {
-    return next(
-      new ErrorHandler(
-        "Password reset token is invalid or has been expired",
-        400
-      )
-    );
-  }
-  if (req.body.registerUserToken
-    !== user.registerUserToken
-  ) {
-    return next(new ErrorHandler("invalid otp", 400));
-  }
-  sendToken(user, 200, res);
-});
-
-
-
-// Login User  =>  /api/v1/login
-
-
-exports.loginUser = catchAsyncErrors(async (req, res, next) => {
-  const { phone, password } = req.body;
-
-  // Checks if email and password is entered by user
-  if (!phone || !password) {
-    return next(new ErrorHandler("Please enter phone & password", 400));
-  }
-
-  // Finding user in database
-  const user = await User.findOne({ phone }).select("+password");
-
-  if (!user) {
-    return next(new ErrorHandler("Invalid phone or Password", 401));
-  }
-
-  // Checks if password is correct or not
-  const isPasswordMatched = await user.comparePassword(password);
-
-  if (!isPasswordMatched) {
-    return next(new ErrorHandler("Invalid phone or Password", 401));
-  }
-
-  sendToken(user, 200, res);
-});
-
-// Forgot Password   =>  /api/v1/password/forgot
-exports.forgotPassword = catchAsyncErrors(async (req, res, next) => {
-  const user = await User.findOne({ phone: req.body.phone });
-
-  if (!user) {
-    return next(new ErrorHandler("User not found with this phone", 404));
-  }
-
-  // Get reset token
-  const resetToken = user.getResetPasswordToken();
-
-  await user.save({ validateBeforeSave: false });
-
-  // const message = `Your password reset token is as follow:\n\n${resetToken}\n\nIf you have not requested this phone, then ignore it.`;
-  const message = `Your password reset token is as follow:\n ${resetToken}\n\nIf you have not requested this phone, then ignore it.`;
-
+// Sends an OTP, but tolerates the resend gap (the caller still gets the timing info).
+async function issueOtpSoftly(phone, purpose) {
   try {
-    await sendEmail({
-      phone: user.phone,
-      subject: "KSS Password Recovery",
-      message,
-    });
-
-    res.status(200).json({
-      success: true,
-      message: `OTP sent to: ${user.phone}`,
-    });
-  } catch (error) {
-    user.resetPasswordToken = undefined;
-    user.resetPasswordExpire = undefined;
-
-    await user.save({ validateBeforeSave: false });
-
-    return next(new ErrorHandler(error.message, 500));
+    return await otpService.issue(phone, purpose);
+  } catch (err) {
+    if (err.code !== 'OTP_RESEND_TOO_SOON') throw err;
+    return { ...otpService.meta(), resendAfterSec: err.details.retryAfterSec };
   }
-});
+}
 
-// Reset Password   =>  /api/v1/password/otp
-exports.otp = catchAsyncErrors(async (req, res, next) => {
-  // Hash URL token
-  const { resetPasswordToken } = req.body;
+// POST /auth/register
+exports.register = async (req, res) => {
+  const { firstName, lastName, email, phone, password } = req.body;
 
-  const user = await User.findOne({ phone: req.body.phone });
-
-  if (!user) {
-    return next(
-      new ErrorHandler(
-        "Password reset token is invalid or has been expired",
-        400
-      )
-    );
+  let user = await User.findOne({ phone }).select('+passwordHash');
+  if (user && user.phoneVerified) {
+    throw new ApiError(409, 'PHONE_TAKEN', 'An account with this phone number already exists');
   }
 
-
-  if (req.body.resetPasswordToken !== user.resetPasswordToken) {
-    return next(new ErrorHandler("invalid otp", 400));
+  if (email) {
+    const emailOwner = await User.findOne({ email, ...(user ? { _id: { $ne: user._id } } : {}) });
+    if (emailOwner) throw new ApiError(409, 'EMAIL_TAKEN', 'An account with this email already exists');
   }
 
-  res.status(200).json({
+  // An unverified signup can be re-submitted; the latest details win.
+  if (!user) user = new User({ phone });
+  user.set({ firstName, lastName, email, termsAcceptedAt: new Date() });
+  await user.setPassword(password);
+  await user.save();
+
+  const otp = await issueOtpSoftly(phone, 'signup');
+  res.status(201).json({ success: true, user, otp });
+};
+
+// POST /auth/otp/resend
+exports.resendOtp = async (req, res) => {
+  const { phone, purpose } = req.body;
+  const user = await User.findOne({ phone });
+
+  if (purpose === 'signup') {
+    if (!user) throw new ApiError(404, 'USER_NOT_FOUND', 'No signup found for this phone number');
+    if (user.phoneVerified) throw new ApiError(409, 'ALREADY_VERIFIED', 'This phone number is already verified');
+    const otp = await otpService.issue(phone, 'signup');
+    return res.json({ success: true, otp });
+  }
+
+  // reset: never reveal whether the number is registered
+  if (user && user.phoneVerified) await otpService.issue(phone, 'reset');
+  res.json({ success: true, otp: otpService.meta() });
+};
+
+// POST /auth/otp/verify
+exports.verifyOtp = async (req, res) => {
+  const { phone, purpose, code } = req.body;
+
+  const user = await User.findOne({ phone });
+  if (!user) throw new ApiError(400, 'OTP_INVALID', 'Code is invalid or has expired');
+
+  await otpService.verify(phone, purpose, code);
+
+  if (purpose === 'signup') {
+    if (!user.phoneVerified) {
+      user.phoneVerified = true;
+      await user.save();
+    }
+    const pair = await tokens.issueTokens(user, clientMeta(req));
+    return sendAuth(res, 200, user, pair);
+  }
+
+  // reset: hand back a short-lived token that is the only way to set a new password
+  const resetToken = crypto.randomBytes(32).toString('base64url');
+  await User.updateOne(
+    { _id: user._id },
+    {
+      $set: {
+        passwordResetTokenHash: tokens.sha256(resetToken),
+        passwordResetExpiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
+      },
+    }
+  );
+  res.json({ success: true, resetToken, expiresInSec: RESET_TOKEN_TTL_MS / 1000 });
+};
+
+// POST /auth/password/forgot
+exports.forgotPassword = async (req, res) => {
+  const { phone } = req.body;
+  const user = await User.findOne({ phone });
+  if (user && user.phoneVerified) await issueOtpSoftly(phone, 'reset');
+
+  res.json({
     success: true,
+    message: 'If this number is registered, a code has been sent to it',
+    otp: otpService.meta(),
   });
-});
+};
 
-
-
-
-
-// Reset Password   =>  /api/v1/password/reset/:token
-exports.resetPassword = catchAsyncErrors(async (req, res, next) => {
-  // Hash URL token
-  const { resetPasswordToken } = req.body;
+// POST /auth/password/reset
+exports.resetPassword = async (req, res) => {
+  const { resetToken, password } = req.body;
 
   const user = await User.findOne({
-    phone: req.body.phone
-  });
+    passwordResetTokenHash: tokens.sha256(resetToken),
+    passwordResetExpiresAt: { $gt: new Date() },
+  }).select('+passwordHash +passwordResetTokenHash +passwordResetExpiresAt');
+  if (!user) throw new ApiError(400, 'RESET_TOKEN_INVALID', 'Reset link is invalid or has expired');
 
-  if (!user) {
-    return next(
-      new ErrorHandler(
-        "Password reset token is invalid or has been expired",
-        400
-      )
-    );
-  }
-
-  if (req.body.password !== req.body.confirmPassword) {
-    return next(new ErrorHandler("Password does not match", 400));
-  }
-  if (req.body.resetPasswordToken !== user.resetPasswordToken) {
-    return next(new ErrorHandler("invalid otp", 400));
-  }
-
-  // Setup new password
-  user.password = req.body.password;
-
+  await user.setPassword(password);
+  user.passwordChangedAt = new Date();
+  user.tokenVersion += 1; // every existing access token stops working
+  user.passwordResetTokenHash = undefined;
+  user.passwordResetExpiresAt = undefined;
   await user.save();
 
-  sendToken(user, 200, res);
-});
+  // Log out every device; then log this one in
+  await tokens.revokeRefreshTokensForUser(user._id);
+  const pair = await tokens.issueTokens(user, clientMeta(req));
+  sendAuth(res, 200, user, pair);
+};
 
-// Get currently logged in user details   =>   /api/v1/me
-exports.getUserProfile = catchAsyncErrors(async (req, res, next) => {
-  const user = await User.findById(req.user.id);
+// POST /auth/login
+exports.login = async (req, res) => {
+  const { phone, password } = req.body;
 
-  res.status(200).json({
-    success: true,
-    user,
-  });
-});
-
-// Update / Change password   =>  /api/v1/password/update
-exports.updatePassword = catchAsyncErrors(async (req, res, next) => {
-  const user = await User.findById(req.user.id).select("+password");
-
-  // Check previous user password
-  const isMatched = await user.comparePassword(req.body.oldPassword);
-  if (!isMatched) {
-    return next(new ErrorHandler("Old password is incorrect"));
+  const user = await User.findOne({ phone }).select('+passwordHash');
+  if (!user || !(await user.comparePassword(password))) {
+    throw new ApiError(401, 'INVALID_CREDENTIALS', 'Phone number or password is incorrect');
+  }
+  if (!user.phoneVerified) {
+    throw new ApiError(403, 'PHONE_NOT_VERIFIED', 'Please verify your phone number first');
   }
 
-  user.password = req.body.password;
+  const pair = await tokens.issueTokens(user, clientMeta(req));
+  sendAuth(res, 200, user, pair);
+};
+
+// POST /auth/refresh
+exports.refresh = async (req, res) => {
+  const { user, tokens: pair } = await tokens.rotateRefreshToken(req.body.refreshToken, clientMeta(req));
+  sendAuth(res, 200, user, pair);
+};
+
+// POST /auth/logout
+exports.logout = async (req, res) => {
+  if (req.body.refreshToken) await tokens.revokeRefreshToken(req.body.refreshToken);
+  res.clearCookie('token');
+  res.json({ success: true, message: 'Logged out' });
+};
+
+// GET /me
+exports.getMe = async (req, res) => {
+  res.json({ success: true, user: req.user });
+};
+
+// PATCH /me
+exports.updateMe = async (req, res) => {
+  const { firstName, lastName, email } = req.body;
+
+  if (email && email !== req.user.email) {
+    const emailOwner = await User.findOne({ email, _id: { $ne: req.user._id } });
+    if (emailOwner) throw new ApiError(409, 'EMAIL_TAKEN', 'An account with this email already exists');
+  }
+
+  if (firstName !== undefined) req.user.firstName = firstName;
+  if (lastName !== undefined) req.user.lastName = lastName;
+  if (email !== undefined) req.user.email = email;
+  await req.user.save();
+
+  res.json({ success: true, user: req.user });
+};
+
+// PUT /me/password
+exports.changePassword = async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+
+  const user = await User.findById(req.user._id).select('+passwordHash');
+  if (!(await user.comparePassword(currentPassword))) {
+    throw new ApiError(400, 'WRONG_PASSWORD', 'Current password is incorrect');
+  }
+
+  await user.setPassword(newPassword);
+  user.passwordChangedAt = new Date();
+  user.tokenVersion += 1; // every existing access token stops working
   await user.save();
 
-  sendToken(user, 200, res);
-});
-
-// Update user profile   =>   /api/v1/me/update
-exports.updateProfile = catchAsyncErrors(async (req, res, next) => {
-  const newUserData = {
-    name: req.body.name,
-    email: req.body.email,
-  };
-
-  const user = await User.findByIdAndUpdate(req.user.id, newUserData, {
-    new: true,
-    runValidators: true,
-    useFindAndModify: false,
-  });
-
-  res.status(200).json({
-    success: true,
-  });
-});
-
-// Logout user   =>   /api/v1/logout
-exports.logout = catchAsyncErrors(async (req, res, next) => {
-  res.cookie("token", null, {
-    expires: new Date(Date.now()),
-    httpOnly: true,
-  });
-
-  res.status(200).json({
-    success: true,
-    message: "Logged out",
-  });
-});
-
-// Admin Routes
-
-// Get all users   =>   /api/v1/admin/users
-exports.allUsers = catchAsyncErrors(async (req, res, next) => {
-  const users = await User.find();
-
-  res.status(200).json({
-    success: true,
-    users,
-  });
-});
-
-// Get user details   =>   /api/v1/admin/user/:id
-exports.getUserDetails = catchAsyncErrors(async (req, res, next) => {
-  const user = await User.findById(req.params.id);
-
-  if (!user) {
-    return next(
-      new ErrorHandler(`User does not found with id: ${req.params.id}`)
-    );
-  }
-
-  res.status(200).json({
-    success: true,
-    user,
-  });
-});
-
-// Update user profile   =>   /api/v1/admin/user/:id
-exports.updateUser = catchAsyncErrors(async (req, res, next) => {
-  const newUserData = {
-    name: req.body.name,
-    email: req.body.email,
-    phone: req.body.phone,
-    phone2: req.body.phone2,
-    role: req.body.role,
-  };
-
-  const user = await User.findByIdAndUpdate(req.params.id, newUserData, {
-    new: true,
-    runValidators: true,
-    useFindAndModify: false,
-  });
-
-  res.status(200).json({
-    success: true,
-  });
-});
-
-// Delete user   =>   /api/v1/admin/user/:id
-exports.deleteUser = catchAsyncErrors(async (req, res, next) => {
-  const user = await User.findById(req.params.id);
-
-  if (!user) {
-    return next(
-      new ErrorHandler(`User does not found with id: ${req.params.id}`)
-    );
-  }
-
-  await user.remove();
-
-
-  res.status(200).json({
-    success: true,
-  });
-});
-
-compareExpDate = function (expDate) {
-  let now = new Date().getTime();
-  let exp = new Date(expDate).getTime();
-
-  return exp > now;
-}
+  // Other sessions are logged out; this one gets fresh tokens
+  await tokens.revokeRefreshTokensForUser(user._id);
+  const pair = await tokens.issueTokens(user, clientMeta(req));
+  sendAuth(res, 200, user, pair);
+};

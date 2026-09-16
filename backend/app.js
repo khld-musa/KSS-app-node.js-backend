@@ -1,46 +1,76 @@
 const express = require('express');
+const cookieParser = require('cookie-parser');
+const helmet = require('helmet');
+const cors = require('cors');
+const dotenv = require('dotenv');
+
+dotenv.config({ path: 'backend/config/config.env', quiet: true });
+
+if (!process.env.JWT_SECRET) {
+  throw new Error('JWT_SECRET must be set (see backend/config/config.env.example)');
+}
+
+const ApiError = require('./utils/ApiError');
+const storage = require('./utils/storage');
+const errorHandler = require('./middlewares/errors');
+
 const app = express();
 
-const cookieParser = require('cookie-parser')
-const bodyParser = require('body-parser')
-// const fileUpload = require('express-fileupload')
-const dotenv = require('dotenv');
-const path = require('path')
+app.use(helmet());
+app.use(
+  cors({
+    origin: (process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean),
+    credentials: true,
+  })
+);
+app.set('trust proxy', 1);
 
-const errorMiddleware = require('./middlewares/errors')
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
+// Express 5 leaves req.body undefined when no body parser matched
+app.use((req, res, next) => {
+  req.body ??= {};
+  next();
+});
 
-// Setting up config file 
-// if (process.env.NODE_ENV !== 'PRODUCTION') require('dotenv').config({ path: 'backend/config/config.env' })
-dotenv.config({ path: 'backend/config/config.env' })
+app.get('/health', (req, res) => res.json({ success: true }));
 
-app.use(express.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(cookieParser())
-// app.use(fileUpload());
+// Uploaded images. File names are random and never reused, so they can be cached for a long time.
+// Cross-origin is allowed so a web admin on another domain can display them.
+app.use(
+  storage.PUBLIC_PREFIX,
+  express.static(storage.uploadRoot(), {
+    index: false,
+    dotfiles: 'deny',
+    maxAge: '30d',
+    immutable: true,
+    setHeaders: (res) => res.set('Cross-Origin-Resource-Policy', 'cross-origin'),
+  })
+);
 
+const api = express.Router();
+api.get('/health', (req, res) => res.json({ success: true }));
+api.use(require('./routes/auth'));
+api.use(require('./routes/address'));
+api.use(require('./routes/user'));
+api.use(require('./routes/category'));
+api.use(require('./routes/store'));
+api.use(require('./routes/product'));
+api.use(require('./routes/cart'));
+api.use(require('./routes/coupon'));
+api.use(require('./routes/order'));
+api.use(require('./routes/settings'));
+api.use(require('./routes/banner'));
+api.use(require('./routes/home'));
+api.use(require('./routes/wishlist'));
+api.use(require('./routes/review'));
+app.use('/api/v1', api);
 
-// Import all routes
-const images = require('./routes/image');
-const products = require('./routes/product');
-const auth = require('./routes/auth');
-const order = require('./routes/order');
-const delivery = require('./routes/delivery');
-const info = require('./routes/info')
-const offer = require('./routes/offer');
+app.use((req, res, next) => {
+  next(new ApiError(404, 'NOT_FOUND', `Cannot ${req.method} ${req.originalUrl}`));
+});
 
+app.use(errorHandler);
 
-
-app.use('/assets', images)
-app.use('/api/v1', products)
-app.use('/api/v1', auth)
-app.use('/api/v1', order)
-app.use('/api/v1', info)
-app.use('/api/v1', delivery)
-app.use('/api/v1', offer)
-
-
-
-// Middleware to handle errors
-app.use(errorMiddleware);
-
-module.exports = app
+module.exports = app;
