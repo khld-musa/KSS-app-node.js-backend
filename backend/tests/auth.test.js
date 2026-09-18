@@ -148,17 +148,45 @@ describe('login + sessions', () => {
     assert.equal(res.body.error.code, 'TOKEN_INVALID');
   });
 
-  test('refresh rotates tokens; reusing an old one revokes the whole session', async () => {
+  test('refresh rotates tokens; reusing an old one later revokes the whole session', async () => {
     const { refreshToken } = await registerAndVerify();
 
     const r1 = await api().post('/api/v1/auth/refresh').send({ refreshToken }).expect(200);
     assert.notEqual(r1.body.refreshToken, refreshToken);
 
-    // replaying the original = theft: everything is revoked
+    // a parallel request refreshing with the same token moments later still works
+    const parallel = await api().post('/api/v1/auth/refresh').send({ refreshToken }).expect(200);
+    assert.notEqual(parallel.body.refreshToken, r1.body.refreshToken);
+
+    // replaying it after the grace period = theft: everything is revoked
+    await conn.collection('refreshtokens').updateMany({}, [{ $set: { rotatedAt: { $cond: [{ $ne: ['$rotatedAt', null] }, new Date(Date.now() - 60_000), null] } } }]);
     const reuse = await api().post('/api/v1/auth/refresh').send({ refreshToken }).expect(401);
     assert.equal(reuse.body.error.code, 'REFRESH_REUSED');
-    const r2 = await api().post('/api/v1/auth/refresh').send({ refreshToken: r1.body.refreshToken }).expect(401);
-    assert.equal(r2.body.error.code, 'REFRESH_REUSED');
+    for (const token of [r1.body.refreshToken, parallel.body.refreshToken]) {
+      const res = await api().post('/api/v1/auth/refresh').send({ refreshToken: token }).expect(401);
+      assert.equal(res.body.error.code, 'REFRESH_REUSED');
+    }
+  });
+
+  test('the grace period never outlives a logout or a password change', async () => {
+    // logged out: the token it was swapped for is revoked, so the old one is refused
+    let { refreshToken } = await registerAndVerify();
+    const rotated = await api().post('/api/v1/auth/refresh').send({ refreshToken }).expect(200);
+    await api().post('/api/v1/auth/logout').send({ refreshToken: rotated.body.refreshToken }).expect(200);
+    let res = await api().post('/api/v1/auth/refresh').send({ refreshToken }).expect(401);
+    assert.equal(res.body.error.code, 'REFRESH_REUSED');
+
+    // password changed (logs out everywhere): an old token in its grace period is refused too
+    const login = await api().post('/api/v1/auth/login').send({ phone: PHONE, password: PASSWORD }).expect(200);
+    refreshToken = login.body.refreshToken;
+    const next = await api().post('/api/v1/auth/refresh').send({ refreshToken }).expect(200);
+    await api()
+      .put('/api/v1/me/password')
+      .set('Authorization', `Bearer ${next.body.accessToken}`)
+      .send({ currentPassword: PASSWORD, newPassword: 'N3wPassword!' })
+      .expect(200);
+    res = await api().post('/api/v1/auth/refresh').send({ refreshToken }).expect(401);
+    assert.equal(res.body.error.code, 'REFRESH_REUSED');
   });
 
   test('logout revokes the refresh token', async () => {

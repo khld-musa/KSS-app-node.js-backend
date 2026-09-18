@@ -27,39 +27,67 @@ function refreshTtlMs() {
 }
 
 // Creates a new access + refresh pair. The refresh token is stored hashed.
-async function issueTokens(user, meta = {}) {
+async function issuePair(user, meta = {}) {
   const refreshToken = crypto.randomBytes(32).toString('base64url');
-  await RefreshToken.create({
+  const doc = await RefreshToken.create({
     user: user._id,
     tokenHash: sha256(refreshToken),
     expiresAt: new Date(Date.now() + refreshTtlMs()),
+    tokenVersion: user.tokenVersion || 0,
     userAgent: meta.userAgent,
     ip: meta.ip,
   });
-  return { accessToken: signAccessToken(user), refreshToken };
+  return { tokens: { accessToken: signAccessToken(user), refreshToken }, doc };
 }
 
-// Swaps a refresh token for a new pair. Presenting an already-revoked token is
-// treated as theft: every token for that user is revoked.
+async function issueTokens(user, meta = {}) {
+  return (await issuePair(user, meta)).tokens;
+}
+
+// A client that fires several requests at once may refresh with the same token more
+// than once. A token that was *rotated* (not logged out) moments ago is therefore
+// accepted again for a short grace period, unless the session was ended since.
+const ROTATION_GRACE_MS = 30 * 1000;
+
+async function withinRotationGrace(doc, user) {
+  if (!doc.rotatedAt || Date.now() - doc.rotatedAt.getTime() > ROTATION_GRACE_MS) return false;
+  // "log out everywhere" (password change, reset) bumped the user's version since
+  if ((doc.tokenVersion || 0) !== (user.tokenVersion || 0)) return false;
+  // the token it was swapped for must not have been logged out
+  const replacement = doc.replacedBy ? await RefreshToken.findById(doc.replacedBy) : null;
+  return Boolean(replacement) && (!replacement.revokedAt || Boolean(replacement.rotatedAt));
+}
+
+// Swaps a refresh token for a new pair. Presenting a token that was logged out, or
+// rotated longer ago than the grace period, is treated as theft: every token for
+// that user is revoked.
 async function rotateRefreshToken(rawToken, meta = {}) {
   const doc = await RefreshToken.findOne({ tokenHash: sha256(rawToken) });
   if (!doc) throw new ApiError(401, 'REFRESH_INVALID', 'Refresh token is invalid');
-
-  if (doc.revokedAt) {
-    await revokeAllForUser(doc.user);
-    throw new ApiError(401, 'REFRESH_REUSED', 'Refresh token was already used. Please log in again.');
-  }
   if (doc.expiresAt < new Date()) {
     throw new ApiError(401, 'REFRESH_EXPIRED', 'Refresh token has expired');
   }
 
   const user = await User.findById(doc.user);
   if (!user) throw new ApiError(401, 'REFRESH_INVALID', 'Refresh token is invalid');
+  if (user.isActive === false) throw new ApiError(401, 'ACCOUNT_DISABLED', 'This account has been disabled');
 
-  doc.revokedAt = new Date();
+  if (doc.revokedAt) {
+    if (!(await withinRotationGrace(doc, user))) {
+      await revokeAllForUser(doc.user);
+      throw new ApiError(401, 'REFRESH_REUSED', 'Refresh token was already used. Please log in again.');
+    }
+    const { tokens } = await issuePair(user, meta);
+    return { user, tokens };
+  }
+
+  const { tokens, doc: replacement } = await issuePair(user, meta);
+  const now = new Date();
+  doc.revokedAt = now;
+  doc.rotatedAt = now;
+  doc.replacedBy = replacement._id;
   await doc.save();
 
-  const tokens = await issueTokens(user, meta);
   return { user, tokens };
 }
 

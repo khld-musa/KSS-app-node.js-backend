@@ -149,6 +149,9 @@ exports.login = async (req, res) => {
   if (!user.phoneVerified) {
     throw new ApiError(403, 'PHONE_NOT_VERIFIED', 'Please verify your phone number first');
   }
+  if (user.isActive === false) {
+    throw new ApiError(403, 'ACCOUNT_DISABLED', 'This account has been disabled. Please contact SudaMarket support.');
+  }
 
   const pair = await tokens.issueTokens(user, clientMeta(req));
   sendAuth(res, 200, user, pair);

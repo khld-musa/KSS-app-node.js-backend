@@ -23,6 +23,7 @@ async function requireAuth(req, res, next) {
 
   const user = await User.findById(payload.sub);
   if (!user) throw new ApiError(401, 'UNAUTHENTICATED', 'Account no longer exists');
+  if (user.isActive === false) throw new ApiError(401, 'ACCOUNT_DISABLED', 'This account has been disabled');
 
   // Tokens issued before a password change / forced logout carry an old version
   if ((payload.tv || 0) !== (user.tokenVersion || 0)) {
@@ -41,7 +42,7 @@ async function optionalAuth(req, res, next) {
     try {
       const payload = verifyAccessToken(token);
       const user = await User.findById(payload.sub);
-      if (user && (payload.tv || 0) === (user.tokenVersion || 0)) req.user = user;
+      if (user && user.isActive !== false && (payload.tv || 0) === (user.tokenVersion || 0)) req.user = user;
     } catch {
       // invalid or expired token: treat as a guest
     }

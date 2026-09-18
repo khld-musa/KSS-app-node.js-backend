@@ -61,6 +61,7 @@ api.use(require('./routes/cart'));
 api.use(require('./routes/coupon'));
 api.use(require('./routes/order'));
 api.use(require('./routes/settings'));
+api.use(require('./routes/manage'));
 api.use(require('./routes/banner'));
 api.use(require('./routes/home'));
 api.use(require('./routes/wishlist'));

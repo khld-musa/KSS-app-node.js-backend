@@ -9,21 +9,12 @@ const { loadCart } = require('../services/cart');
 const { reserveUse, releaseUse } = require('../services/coupons');
 const orders = require('../services/orders');
 
+const { shipmentView } = orders;
+
 const ORDER_CARD_FIELDS =
   'number status createdAt pricing shipments.storeName shipments.status shipments.items.name shipments.items.image shipments.items.qty';
 
 const notFound = () => new ApiError(404, 'ORDER_NOT_FOUND', 'Order not found');
-
-// What a store or driver sees: the order header plus only their own shipment
-const shipmentView = (order, shipment) => ({
-  _id: order._id,
-  number: order.number,
-  status: order.status,
-  createdAt: order.createdAt,
-  address: order.address,
-  notes: order.notes,
-  shipment,
-});
 
 // POST /orders   (places an order from the current cart)
 exports.createOrder = async (req, res) => {

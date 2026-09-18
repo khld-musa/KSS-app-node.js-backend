@@ -29,10 +29,12 @@ const storeShape = {
   description: text(1000).optional(),
   categoryLabel: text(60).optional(),
   address: text(200).optional(),
-  location: location.optional(),
+  // null removes the location
+  location: location.nullable().optional(),
   deliveryMinutes: z
     .object({ min: z.number().int().min(0), max: z.number().int().min(0) })
     .refine((v) => v.min <= v.max, { message: 'min must not be greater than max', path: ['min'] })
+    .nullable() // null removes the delivery time
     .optional(),
   deliveryFee: money.optional(),
   freeDeliveryThreshold: money.nullable().optional(),
@@ -103,10 +105,3 @@ exports.listProducts = z
     message: 'minPrice must not be greater than maxPrice',
     path: ['minPrice'],
   });
-
-// ---------- admin users ----------
-
-const ROLES = ['user', 'vendor', 'driver', 'admin'];
-
-exports.listUsers = z.object({ q: text(80).optional(), role: z.enum(ROLES).optional(), ...page });
-exports.updateUserRole = z.object({ role: z.enum(ROLES) });

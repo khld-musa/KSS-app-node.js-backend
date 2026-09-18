@@ -108,8 +108,20 @@ async function runEffects(effects) {
   for (const effect of effects) await effect();
 }
 
+// What a store or driver sees: the order header plus only their own shipment
+const shipmentView = (order, shipment) => ({
+  _id: order._id,
+  number: order.number,
+  status: order.status,
+  createdAt: order.createdAt,
+  address: order.address,
+  notes: order.notes,
+  shipment,
+});
+
 module.exports = {
   canTransition,
+  shipmentView,
   overallStatus,
   createWithNumber,
   reserveStock,

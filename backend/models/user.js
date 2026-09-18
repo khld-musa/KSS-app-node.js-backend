@@ -40,6 +40,8 @@ const userSchema = new Schema(
     passwordChangedAt: { type: Date },
     // Bumped on password change / forced logout; access tokens carry it and must match
     tokenVersion: { type: Number, default: 0 },
+    // Disabled accounts cannot sign in, and their existing sessions stop working
+    isActive: { type: Boolean, default: true },
     passwordResetTokenHash: { type: String, select: false },
     passwordResetExpiresAt: { type: Date, select: false },
     termsAcceptedAt: { type: Date },

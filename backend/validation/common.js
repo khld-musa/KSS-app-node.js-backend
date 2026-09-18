@@ -41,6 +41,20 @@ const location = z.object({
   lng: z.number().min(-180).max(180),
 });
 
+// Account fields shared by signup and the admin user forms
+const password = z
+  .string({ error: 'Password is required' })
+  .min(8, 'Password must be at least 8 characters')
+  .max(72, 'Password must be at most 72 characters');
+
+const personName = z.string({ error: 'Required' }).trim().min(1, 'Required').max(50, 'Too long');
+
+// Empty text means "no email"
+const email = z.preprocess(
+  (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+  z.string().trim().toLowerCase().email('Please enter a valid email address').optional()
+);
+
 // Optional "near this point" query params (both lat and lng, or neither)
 const nearQuery = {
   lat: z.coerce.number().min(-90).max(90).optional(),
@@ -54,4 +68,18 @@ const withNearCheck = (schema) =>
     path: ['lat'],
   });
 
-module.exports = { objectId, money, text, requiredText, nonEmpty, page, phone, location, nearQuery, withNearCheck };
+module.exports = {
+  objectId,
+  money,
+  text,
+  requiredText,
+  nonEmpty,
+  page,
+  phone,
+  location,
+  nearQuery,
+  withNearCheck,
+  password,
+  personName,
+  email,
+};

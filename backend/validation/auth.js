@@ -1,17 +1,5 @@
 const { z } = require('zod');
-const { phone } = require('./common');
-
-const password = z
-  .string({ error: 'Password is required' })
-  .min(8, 'Password must be at least 8 characters')
-  .max(72, 'Password must be at most 72 characters');
-
-const name = z.string({ error: 'Required' }).trim().min(1, 'Required').max(50, 'Too long');
-
-const email = z.preprocess(
-  (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
-  z.string().trim().toLowerCase().email('Please enter a valid email address').optional()
-);
+const { phone, password, personName: name, email } = require('./common');
 
 const otpCode = z.string({ error: 'Code is required' }).regex(/^\d{5}$/, 'Code must be 5 digits');
 const purpose = z.enum(['signup', 'reset'], { error: 'purpose must be signup or reset' });

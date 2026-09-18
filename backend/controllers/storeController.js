@@ -43,13 +43,14 @@ exports.getStore = async (req, res) => {
 
 // POST /admin/stores
 exports.createStore = async (req, res) => {
-  const { owner: ownerId, location, ...fields } = req.body;
+  const { owner: ownerId, location, deliveryMinutes, ...fields } = req.body;
   const owner = await resolveOwner(ownerId);
 
   const store = await Store.create({
     ...fields,
     owner: owner._id,
     ...(location && { location: toPoint(location) }),
+    ...(deliveryMinutes && { deliveryMinutes }),
   });
   res.status(201).json({ success: true, store });
 };
@@ -66,10 +67,14 @@ exports.updateStore = async (req, res) => {
     }
   }
 
-  const { owner: ownerId, location, collections, ...fields } = req.body;
+  const { owner: ownerId, location, deliveryMinutes, collections, ...fields } = req.body;
 
   if (ownerId !== undefined) store.owner = (await resolveOwner(ownerId))._id;
-  if (location !== undefined) store.location = toPoint(location);
+  // null removes the location / delivery time
+  if (location !== undefined) store.location = location === null ? undefined : toPoint(location);
+  if (deliveryMinutes !== undefined) {
+    store.deliveryMinutes = deliveryMinutes === null ? { min: undefined, max: undefined } : deliveryMinutes;
+  }
   store.set(fields);
 
   // Collections are replaced as a whole. Existing ones are kept by sending their _id;
